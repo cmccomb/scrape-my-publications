@@ -17,4 +17,4 @@ jobs:
       - name: install dependencies
         run: pip install -r requirements.txt
       - name: do the heavy lifting
-        run: python -m main.py {{secrets.API_TOKEN}}
+        run: python -m main.py ${{secrets.API_TOKEN}}
