@@ -34,4 +34,4 @@ for i in tqdm(range(len(author["publications"]))):
 
 # Convert to a dataset and upload to hugginface
 dataset = datasets.Dataset.from_list(publication_info)
-dataset.push_to_hub("ccm/publications", use_auth_token=sys.argv[1])
+dataset.push_to_hub("ccm/publications", token=sys.argv[1])
