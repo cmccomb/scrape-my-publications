@@ -19,7 +19,7 @@ model = sentence_transformers.SentenceTransformer("allenai-specter")
 publication_info = []
 
 # Iterate through publications and fill
-for i in tqdm(range(len(author["publications"]))):
+for i in tqdm(range(10)):  # tqdm(range(len(author["publications"]))):
     # Fill the publication info
     this_pub = scholarly.scholarly.fill(author["publications"][i])
 
