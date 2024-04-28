@@ -27,7 +27,7 @@ for i in tqdm(range(len(author["publications"]))):
             "url_related_articles": this_pub.get("url_related_articles"),
             **this_pub["cites_per_year"],
             "embedding": model.encode(
-                this_pub["bib"]["title"] + " " + this_pub["bib"]["abstract"]
+                this_pub["bib"]["title"] + " " + this_pub["bib"].get("abstract")
             ),
         }
     )
