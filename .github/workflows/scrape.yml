@@ -1,0 +1,20 @@
+name: Upload Data to HF
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    environment: upload
+    steps:
+      - uses: actions/checkout@v2
+      - name: install dependencies
+        run: pip install -r requirements.txt
+      - name: run tests
+        run: python -m main.py {{secrets.API_TOKEN}}
