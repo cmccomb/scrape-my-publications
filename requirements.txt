@@ -2,3 +2,4 @@ scholarly
 tqdm
 sentence_transformers
 datasets
+pandas
