@@ -1,7 +1,6 @@
 import scholarly
 from tqdm.auto import tqdm
 import sentence_transformers
-import pandas
 import datasets
 import sys
 

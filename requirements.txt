@@ -1,5 +1,4 @@
 scholarly
 tqdm
 sentence_transformers
-pandas
 datasets
