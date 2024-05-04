@@ -31,7 +31,7 @@ for i in tqdm(range(len(author["publications"]))):
     # Append data to the list
     publication_data.append(
         {
-            **publication["bib"],
+            "bibtex": publication["bib"],
             "author_pub_id": publication.get("author_pub_id"),
             "num_citations": publication.get("num_citations"),
             "citedby_url": publication.get("citedby_url"),
