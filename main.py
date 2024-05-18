@@ -28,6 +28,17 @@ for i in tqdm(range(len(author["publications"]))):
         publication["bib"]["title"] + " " + str(publication["bib"].get("abstract"))
     )
 
+    publication["bib"].update({"pub_type": "article"})
+    publication["bib"].update(
+        {
+            "bib_id": author["publications"][0]["bib"]["author"]
+            .split(" and ")[0]
+            .split(" ")[-1]
+            .lower()
+            + str(author["publications"][0]["bib"]["pub_year"])
+        }
+    )
+
     # Append data to the list
     publication_data.append(
         {
