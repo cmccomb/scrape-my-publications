@@ -35,7 +35,7 @@ for i in tqdm(range(len(author["publications"]))):
             .split(" and ")[0]
             .split(" ")[-1]
             .lower()
-            + str(author["publications"][i]["bib"]["pub_year"])
+            + str(author["publications"][i]["bib"].get("pub_year", 0))
         }
     )
 
