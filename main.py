@@ -28,16 +28,20 @@ for i in tqdm(range(len(author["publications"]))):
         publication["bib"]["title"] + " " + str(publication["bib"].get("abstract"))
     )
 
+    # Update publication info in order to format bibtex well
     publication["bib"].update({"pub_type": "article"})
+    first_authors_last_name = (
+        author["publications"][i]["bib"]["author"]
+        .split(" and ")[0]
+        .split(" ")[-1]
+        .lower()
+    )
+    first_three_words_from_title = "".join(
+        author["publications"][i]["bib"].get("title", "").split(" ")[:3]
+    ).lower()
+    year = str(author["publications"][i]["bib"].get("pub_year", 0))
     publication["bib"].update(
-        {
-            "bib_id": author["publications"][i]["bib"]["author"]
-            .split(" and ")[0]
-            .split(" ")[-1]
-            .lower()
-            + str(author["publications"][i]["bib"].get("pub_year", 0))
-            + "".join(author["publications"][i]["bib"].get("title", "").split(" ")[:2])
-        }
+        {"bib_id": first_authors_last_name + year + first_three_words_from_title}
     )
 
     # Append data to the list
