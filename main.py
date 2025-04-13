@@ -166,16 +166,14 @@ for i in tqdm(range(len(new_publications))):
 #     )
 
 # Convert to a dataset. Converting to pandas and then to dataset avoids some weird errors
-
 new_table = pandas.DataFrame.from_dict(new_publication_data)
-# Add new table to the existing dataset
+new_table.rename(columns={2024: "2024", 2025: "2025"}, inplace=True)
 
-
+# Concatenate the DataFrames
 publication_dataset = datasets.Dataset.from_pandas(
     pandas.concat(
         [dataset.to_pandas(), new_table], ignore_index=True, sort=False
     ).reset_index()
 )
-
 # Upload to huggingface
 publication_dataset.push_to_hub(REPO_ID, token=HF_TOKEN)
