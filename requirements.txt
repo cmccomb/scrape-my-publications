@@ -4,3 +4,4 @@ transformers
 adapters
 datasets
 pandas
+torch
