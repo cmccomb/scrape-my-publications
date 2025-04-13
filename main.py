@@ -3,7 +3,8 @@ import sys  # Used to read token argument from command line
 import datasets  # Used to upload to huggingface
 import pandas  # Used to convert to a dataset
 import scholarly  # Used to get author info from Google Scholar
-import sentence_transformers  # Used to embed the publication text
+from transformers import AutoTokenizer
+from adapters import AutoAdapterModel
 from tqdm.auto import tqdm  # Used to show progress bar
 
 # Get API token from command line
@@ -12,8 +13,10 @@ HF_TOKEN = sys.argv[1]
 # Get author info from Google Scholar
 author = scholarly.scholarly.fill(scholarly.scholarly.search_author_id("0P9w_S0AAAAJ"))
 
-# Load embedding model
-model = sentence_transformers.SentenceTransformer("allenai-specter")
+# Load embedding model and tokenizer
+tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
+model = AutoAdapterModel.from_pretrained("allenai/specter2_base")
+model.load_adapter("allenai/specter2", source="hf", load_as="specter2", set_active=True)
 
 # Declare blank list to append to
 publication_data = []
@@ -23,9 +26,23 @@ for i in tqdm(range(len(author["publications"]))):
     # Fill the publication info
     publication = scholarly.scholarly.fill(author["publications"][i])
 
-    # Embed the publication text
-    embedding_vector = model.encode(
-        publication["bib"]["title"] + " " + str(publication["bib"].get("abstract"))
+    # Embed the title and abstract
+    embedding_vector = (
+        model(
+            **tokenizer(
+                publication["bib"]["title"]
+                + tokenizer.sep_token
+                + publication["bib"]["abstract"],
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                return_token_type_ids=False,
+                max_length=512,
+            )
+        )
+        .last_hidden_state[:, 0, :]
+        .detach()
+        .numpy()[0]
     )
 
     # Update publication info in order to format bibtex well
@@ -60,7 +77,8 @@ for i in tqdm(range(len(author["publications"]))):
         }
     )
 
-# Convert to a dataset and upload to huggingface. Converting to pandas and then to dataset avoids some weird errors
+# Convert to a dataset and upload to huggingface.
+# Converting to pandas and then to dataset avoids some weird errors
 publication_dataset = datasets.Dataset.from_pandas(
     pandas.DataFrame.from_dict(publication_data)
 )

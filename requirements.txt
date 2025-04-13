@@ -1,5 +1,6 @@
 scholarly
 tqdm
-sentence_transformers
+transformers
+adapters
 datasets
 pandas
