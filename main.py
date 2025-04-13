@@ -1,4 +1,6 @@
+import random # Used for random sleep
 import sys  # Used to read token argument from command line
+import time # Used for random sleep
 
 import datasets  # Used to upload to huggingface
 import pandas  # Used to convert to a dataset
@@ -23,6 +25,8 @@ publication_data = []
 
 # Iterate through publications and fill
 for i in tqdm(range(len(author["publications"]))):
+    time.sleep(random.randint(5, 20))
+    
     # Fill the publication info
     publication = scholarly.scholarly.fill(author["publications"][i])
 
