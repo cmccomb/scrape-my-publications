@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: upload
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Scrape, parse, and upload data

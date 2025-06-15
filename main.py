@@ -1,19 +1,61 @@
-import random  # Used for random sleep
+"""
+This script automates the retrieval, embedding, and cloud storage of academic publication data
+for a specified Google Scholar author profile. Designed to keep a Hugging Face dataset
+(ccm/publications) current, it pulls new publications and refreshes a subset of existing ones,
+embedding each using the SPECTER2 model.
+
+Main Features:
+---------------
+- Fetches publication metadata from Google Scholar via the `scholarly` library
+- Detects and processes new publications or stale entries (based on update timestamps)
+- Embeds title + abstract using the SPECTER2 model (via Hugging Face adapters)
+- Formats metadata including BibTeX, citation counts, and unique BibTeX-style IDs
+- Outputs a merged dataset and pushes it to the Hugging Face Hub
+
+Inputs:
+-------
+- Hugging Face API token (via command line argument)
+- Author ID for Google Scholar (hardcoded)
+- Existing dataset hosted at `ccm/publications` on Hugging Face
+
+Outputs:
+--------
+- Updated Hugging Face dataset with:
+    * BibTeX citation data
+    * Author and citation metadata
+    * Dense embeddings for text
+    * Yearly citation counts
+    * Last update date
+
+Dependencies:
+-------------
+- scholarly
+- pandas
+- datasets
+- transformers
+- adapters
+- tqdm
+
+Usage:
+------
+python update_publication_embeddings.py <HF_API_TOKEN>
+"""
+
+import datetime  # Used to get today's date
 import sys  # Used to read token argument from command line
-import time  # Used for random sleep
 
 import datasets  # Used to upload to huggingface
 import pandas  # Used to convert to a dataset
 import scholarly  # Used to get author info from Google Scholar
-from transformers import AutoTokenizer
 from adapters import AutoAdapterModel
 from tqdm.auto import tqdm  # Used to show progress bar
+from transformers import AutoTokenizer
 
-# Settings
+# Constants for settings
 HF_TOKEN = sys.argv[1]  # Get API token from command line
 REPO_ID = "ccm/publications"  # Huggingface repo ID
 AUTHOR_ID = "0P9w_S0AAAAJ"  # Author ID for Google Scholar
-MAX_PUBLICATIONS = 100  # Max number of publications to process per run
+MAX_UPDATED_PUBLICATIONS = 10  # Max number of old publications to update at a time
 
 # Load embedding model and tokenizer
 tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
@@ -23,19 +65,35 @@ model.load_adapter("allenai/specter2", source="hf", load_as="specter2", set_acti
 # Download the repo from REPO_ID using datasets
 dataset = datasets.load_dataset(REPO_ID, split="train")
 
-# Get author info from Google Scholar
-author = scholarly.scholarly.fill(scholarly.scholarly.search_author_id(AUTHOR_ID))
+# Add a date column if it doesn't already exist.
+if "date" not in dataset.column_names:
+    dataset = dataset.add_column(
+        "Last Updated", [datetime.date.today().strftime("%Y-%m-%d")] * len(dataset)
+    )
 
-# Find new publications
+# Get the publications ids from in the current dataset
 publications_in_current_dataset = dataset.to_pandas()["author_pub_id"].values
+
+# Select MAX_UPDATED_PUBLICATIONS to update, based on the oldest update date
+publications_to_update = (
+    dataset.sort("Last Updated")
+    .select(range(min(MAX_UPDATED_PUBLICATIONS, len(dataset))))
+    .to_pandas()["author_pub_id"]
+    .values
+).tolist()
+
+# Get author info from Google Scholar and then publication IDs
+author = scholarly.scholarly.fill(scholarly.scholarly.search_author_id(AUTHOR_ID))
 publications_from_google_scholar = pandas.DataFrame.from_dict(author["publications"])[
     "author_pub_id"
 ].values
+
+# Find new publications
 new_publication_ids = [
     pub_id
     for pub_id in publications_from_google_scholar
     if pub_id not in publications_in_current_dataset
-]
+] + publications_to_update
 new_publications = [
     next(
         (d for d in author["publications"] if d.get("author_pub_id") == new_pub_id),
@@ -44,11 +102,10 @@ new_publications = [
     for new_pub_id in new_publication_ids
 ]
 
-# Declare blank list to append to
 new_publication_data = []
 
 # Iterate through publications and fill
-for i in tqdm(range(len(new_publications))):
+for i in tqdm(range(len(new_publications)), desc="Processing new publications"):
     print(new_publications[i])
 
     # Fill the publication info
@@ -58,9 +115,9 @@ for i in tqdm(range(len(new_publications))):
     embedding_vector = (
         model(
             **tokenizer(
-                publication["bib"]["title"]
+                (publication["bib"].get("title") or "")
                 + tokenizer.sep_token
-                + publication["bib"]["abstract"],
+                + (publication["bib"].get("abstract") or ""),
                 padding=True,
                 truncation=True,
                 return_tensors="pt",
@@ -97,12 +154,14 @@ for i in tqdm(range(len(new_publications))):
             "cites_id": publication.get("cites_id"),
             "pub_url": publication.get("pub_url"),
             "url_related_articles": publication.get("url_related_articles"),
-            **publication["cites_per_year"],
+            **{str(k): v for k, v in publication["cites_per_year"].items()},
             "embedding": embedding_vector,
+            "date": datetime.date.today().strftime("%Y-%m-%d"),
         }
     )
 
 # Convert to a dataset. Converting to pandas and then to dataset avoids some weird errors
+print(new_publication_data)
 new_table = pandas.DataFrame.from_dict(new_publication_data)
 new_table.rename(columns={2024: "2024", 2025: "2025"}, inplace=True)
 
