@@ -1,0 +1,20 @@
+name: Upload Data to Huggingface Repository
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  data-upload:
+    runs-on: ubuntu-latest
+    environment: upload
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Scrape, parse, and upload data
+        run: python re_encode_all.py ${{secrets.API_TOKEN}}

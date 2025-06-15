@@ -27,15 +27,6 @@ Outputs:
     * Yearly citation counts
     * Last update date
 
-Dependencies:
--------------
-- scholarly
-- pandas
-- datasets
-- transformers
-- adapters
-- tqdm
-
 Usage:
 ------
 python update_publication_embeddings.py <HF_API_TOKEN>
@@ -55,7 +46,7 @@ from transformers import AutoTokenizer
 HF_TOKEN = sys.argv[1]  # Get API token from command line
 REPO_ID = "ccm/publications"  # Huggingface repo ID
 AUTHOR_ID = "0P9w_S0AAAAJ"  # Author ID for Google Scholar
-MAX_UPDATED_PUBLICATIONS = 10  # Max number of old publications to update at a time
+MAX_UPDATED_PUBLICATIONS = 2  # Max number of old publications to update at a time
 
 # Load embedding model and tokenizer
 tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
@@ -65,11 +56,14 @@ model.load_adapter("allenai/specter2", source="hf", load_as="specter2", set_acti
 # Download the repo from REPO_ID using datasets
 dataset = datasets.load_dataset(REPO_ID, split="train")
 
-# Add a date column if it doesn't already exist.
-if "date" not in dataset.column_names:
-    dataset = dataset.add_column(
-        "Last Updated", [datetime.date.today().strftime("%Y-%m-%d")] * len(dataset)
-    )
+# Delete a date column if it exists
+if "date" in dataset.column_names:
+    dataset = dataset.remove_columns("date")
+
+# Delete a level_0 column if it exists
+if "level_0" in dataset.column_names:
+    dataset = dataset.remove_columns("level_0")
+
 
 # Get the publications ids from in the current dataset
 publications_in_current_dataset = dataset.to_pandas()["author_pub_id"].values
@@ -156,20 +150,27 @@ for i in tqdm(range(len(new_publications)), desc="Processing new publications"):
             "url_related_articles": publication.get("url_related_articles"),
             **{str(k): v for k, v in publication["cites_per_year"].items()},
             "embedding": embedding_vector,
-            "date": datetime.date.today().strftime("%Y-%m-%d"),
+            "Last Updated": datetime.date.today().strftime("%Y-%m-%d"),
         }
     )
 
 # Convert to a dataset. Converting to pandas and then to dataset avoids some weird errors
-print(new_publication_data)
 new_table = pandas.DataFrame.from_dict(new_publication_data)
 new_table.rename(columns={2024: "2024", 2025: "2025"}, inplace=True)
-
-# Concatenate the DataFrames
-publication_dataset = datasets.Dataset.from_pandas(
-    pandas.concat(
-        [dataset.to_pandas(), new_table], ignore_index=True, sort=False
-    ).reset_index()
+new_table = pandas.concat(
+    [dataset.to_pandas(), new_table], ignore_index=True, sort=False
 )
-# Upload to huggingface
+
+# Remove any duplicated entries in author_pub_id
+new_table = new_table.drop_duplicates(
+    subset=["author_pub_id"], keep="last"
+).reset_index(drop=True)
+
+# Remove level_0 column if it exists
+if "level_0" in new_table.columns:
+    new_table = new_table.drop(columns=["level_0"])
+
+# Make it a dataset and upload to huggingface
+publication_dataset = datasets.Dataset.from_pandas(new_table)
+publication_dataset.remove_columns("index")
 publication_dataset.push_to_hub(REPO_ID, token=HF_TOKEN)
