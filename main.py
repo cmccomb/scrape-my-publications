@@ -56,15 +56,6 @@ model.load_adapter("allenai/specter2", source="hf", load_as="specter2", set_acti
 # Download the repo from REPO_ID using datasets
 dataset = datasets.load_dataset(REPO_ID, split="train")
 
-# Delete a date column if it exists
-if "date" in dataset.column_names:
-    dataset = dataset.remove_columns("date")
-
-# Delete a level_0 column if it exists
-if "level_0" in dataset.column_names:
-    dataset = dataset.remove_columns("level_0")
-
-
 # Get the publications ids from in the current dataset
 publications_in_current_dataset = dataset.to_pandas()["author_pub_id"].values
 
@@ -100,7 +91,6 @@ new_publication_data = []
 
 # Iterate through publications and fill
 for i in tqdm(range(len(new_publications)), desc="Processing new publications"):
-    print(new_publications[i])
 
     # Fill the publication info
     publication = scholarly.scholarly.fill(new_publications[i])
@@ -170,7 +160,21 @@ new_table = new_table.drop_duplicates(
 if "level_0" in new_table.columns:
     new_table = new_table.drop(columns=["level_0"])
 
-# Make it a dataset and upload to huggingface
+# Make it a dataset and upload to huggingface, clean it up, and upload it to huggingface
 publication_dataset = datasets.Dataset.from_pandas(new_table)
-publication_dataset.remove_columns("index")
+publication_dataset = publication_dataset.select_columns(
+    [
+        "bibtex",
+        "bib_dict",
+        "author_pub_id",
+        "num_citations",
+        "citedby_url",
+        "cites_id",
+        "pub_url",
+        "url_related_articles",
+        "embedding",
+        "Last Updated",
+    ]
+    + [str(year) for year in range(2015, datetime.date.today().year + 1)]
+)
 publication_dataset.push_to_hub(REPO_ID, token=HF_TOKEN)
