@@ -1,169 +1,314 @@
-"""
-This script automates the retrieval, embedding, and cloud storage of academic publication data
-for a specified Google Scholar author profile. Designed to keep a Hugging Face dataset
-(ccm/publications) current, it pulls new publications and refreshes a subset of existing ones,
-embedding each using the SPECTER2 model.
+"""scrape-my-publications main workflow.
 
-Main Features:
----------------
-- Fetches publication metadata from Google Scholar via the `scholarly` library
-- Detects and processes new publications or stale entries (based on update timestamps)
-- Embeds title + abstract using the SPECTER2 model (via Hugging Face adapters)
-- Formats metadata including BibTeX, citation counts, and unique BibTeX-style IDs
-- Outputs a merged dataset and pushes it to the Hugging Face Hub
+This module updates the ``ccm/publications`` dataset by retrieving metadata
+for publications from Google Scholar, creating SPECTER2 embeddings, and pushing
+results to the Hugging Face Hub.  The workflow is intentionally incremental to
+avoid repeatedly downloading every publication, which can trigger throttling
+from Google Scholar.
 
-Inputs:
--------
-- Hugging Face API token (via command line argument)
-- Author ID for Google Scholar (hardcoded)
-- Existing dataset hosted at `ccm/publications` on Hugging Face
+The update logic operates in two phases:
 
-Outputs:
---------
-- Updated Hugging Face dataset with:
-    * BibTeX citation data
-    * Author and citation metadata
-    * Dense embeddings for text
-    * Yearly citation counts
-    * Last update date
+1. Perform a lightweight metadata sync to discover publication identifiers.
+2. If new publications exist, fully download ("fill") and embed those entries.
+   Otherwise refresh a small batch of the stalest publications.
 
-Usage:
-------
-python update_publication_embeddings.py <HF_API_TOKEN>
+The file exposes ``main`` so the behavior can be unit-tested without triggering
+network calls on import.
 """
 
-import datetime  # Used to get today's date
-import sys  # Used to read token argument from command line
+from __future__ import annotations
 
-import datasets  # Used to upload to huggingface
-import pandas  # Used to convert to a dataset
-import scholarly  # Used to get author info from Google Scholar
+import datetime
+import logging
+import sys
+from collections.abc import Iterable, Sequence
+from typing import Any, Dict, List
+
+import datasets
+import pandas
+import scholarly
+import torch
 from adapters import AutoAdapterModel
-from tqdm.auto import tqdm  # Used to show progress bar
+from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-# Constants for settings
-HF_TOKEN = sys.argv[1]  # Get API token from command line
-REPO_ID = "ccm/publications"  # Huggingface repo ID
-AUTHOR_ID = "0P9w_S0AAAAJ"  # Author ID for Google Scholar
-MAX_UPDATED_PUBLICATIONS = 2  # Max number of old publications to update at a time
+HF_TOKEN_INDEX = 1
+REPO_ID = "ccm/publications"
+AUTHOR_ID = "0P9w_S0AAAAJ"
+MAX_UPDATED_PUBLICATIONS = 2
+SPECTER_MODEL_NAME = "allenai/specter2_base"
+SPECTER_ADAPTER_NAME = "allenai/specter2"
+LOGGER = logging.getLogger(__name__)
 
-# Load embedding model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
-model = AutoAdapterModel.from_pretrained("allenai/specter2_base")
-model.load_adapter("allenai/specter2", source="hf", load_as="specter2", set_active=True)
 
-# Download the repo from REPO_ID using datasets
-dataset = datasets.load_dataset(REPO_ID, split="train")
+def configure_logging() -> None:
+    """Configure a simple console logger."""
 
-# Get the publications ids from in the current dataset
-publications_in_current_dataset = dataset.to_pandas()["author_pub_id"].values
-
-# Select MAX_UPDATED_PUBLICATIONS to update, based on the oldest update date
-publications_to_update = (
-    dataset.sort("Last Updated")
-    .select(range(min(MAX_UPDATED_PUBLICATIONS, len(dataset))))
-    .to_pandas()["author_pub_id"]
-    .values
-).tolist()
-
-# Get author info from Google Scholar and then publication IDs
-author = scholarly.scholarly.fill(scholarly.scholarly.search_author_id(AUTHOR_ID))
-publications_from_google_scholar = pandas.DataFrame.from_dict(author["publications"])[
-    "author_pub_id"
-].values
-
-# Find new publications
-new_publication_ids = [
-    pub_id
-    for pub_id in publications_from_google_scholar
-    if pub_id not in publications_in_current_dataset
-] + publications_to_update
-new_publications = [
-    next(
-        (d for d in author["publications"] if d.get("author_pub_id") == new_pub_id),
-        None,
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
-    for new_pub_id in new_publication_ids
-]
 
-new_publication_data = []
 
-# Iterate through publications and fill
-for i in tqdm(range(len(new_publications)), desc="Processing new publications"):
+def load_specter2_model() -> tuple[AutoTokenizer, AutoAdapterModel]:
+    """Load the SPECTER2 tokenizer and adapter-equipped model."""
 
-    # Fill the publication info
-    publication = scholarly.scholarly.fill(new_publications[i])
+    tokenizer = AutoTokenizer.from_pretrained(SPECTER_MODEL_NAME)
+    model = AutoAdapterModel.from_pretrained(SPECTER_MODEL_NAME)
+    model.load_adapter(
+        SPECTER_ADAPTER_NAME,
+        source="hf",
+        load_as="specter2",
+        set_active=True,
+    )
+    return tokenizer, model
 
-    # Embed the title and abstract
-    embedding_vector = (
-        model(
-            **tokenizer(
-                (publication["bib"].get("title") or "")
-                + tokenizer.sep_token
-                + (publication["bib"].get("abstract") or ""),
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                return_token_type_ids=False,
-                max_length=512,
+
+def fetch_author_publications(author_id: str) -> list[dict[str, Any]]:
+    """Retrieve lightweight publication metadata for an author."""
+
+    LOGGER.info("Fetching publication list for author %s", author_id)
+    author = scholarly.scholarly.search_author_id(author_id)
+    if not author:
+        msg = f"Author with id {author_id} not found"
+        raise RuntimeError(msg)
+
+    try:
+        author = scholarly.scholarly.fill(author, sections=["publications"])
+    except TypeError:
+        # Older scholarly versions do not accept ``sections``.
+        author = scholarly.scholarly.fill(author)
+
+    publications: list[dict[str, Any]] = list(author.get("publications", []))
+    LOGGER.info("Discovered %d publications from Google Scholar", len(publications))
+    return publications
+
+
+def ensure_last_updated_column(dataset_df: pandas.DataFrame) -> pandas.DataFrame:
+    """Ensure the dataset contains a ``Last Updated`` column."""
+
+    if "Last Updated" not in dataset_df.columns:
+        dataset_df["Last Updated"] = ""
+    dataset_df["Last Updated"] = dataset_df["Last Updated"].fillna("")
+    return dataset_df
+
+
+def parse_last_updated(value: Any) -> datetime.date:
+    """Parse ``Last Updated`` values into :class:`datetime.date`."""
+
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, str) and value:
+        try:
+            return datetime.date.fromisoformat(value)
+        except ValueError:
+            LOGGER.debug("Unparseable Last Updated value: %s", value)
+    return datetime.date.min
+
+
+def determine_publications_to_refresh(
+    remote_publications: Iterable[dict[str, Any]],
+    existing_dataset: pandas.DataFrame,
+    max_refresh: int,
+) -> list[str]:
+    """Return publication identifiers that should be refreshed."""
+
+    existing_dataset = ensure_last_updated_column(existing_dataset.copy())
+    existing_ids: set[str] = set(
+        existing_dataset.get("author_pub_id", pandas.Series(dtype=str))
+        .dropna()
+        .astype(str)
+    )
+    remote_ids: list[str] = [
+        publication.get("author_pub_id")
+        for publication in remote_publications
+        if publication.get("author_pub_id")
+    ]
+
+    new_ids = [pub_id for pub_id in remote_ids if pub_id not in existing_ids]
+    if new_ids:
+        LOGGER.info("Identified %d new publications", len(new_ids))
+        return new_ids
+
+    LOGGER.info("No new publications discovered; refreshing stale entries")
+    working_df = existing_dataset.copy()
+    working_df["_parsed_last_updated"] = working_df["Last Updated"].apply(
+        parse_last_updated
+    )
+    working_df["author_pub_id"] = working_df["author_pub_id"].astype(str)
+
+    refreshed_ids = (
+        working_df.sort_values(
+            by=["_parsed_last_updated", "author_pub_id"],
+            ascending=[True, True],
+        )
+        .head(max_refresh)["author_pub_id"]
+        .tolist()
+    )
+    return refreshed_ids
+
+
+def embed_publication_text(
+    tokenizer: AutoTokenizer,
+    model: AutoAdapterModel,
+    title: str,
+    abstract: str,
+) -> list[float]:
+    """Generate a SPECTER2 embedding for the given title + abstract."""
+
+    model_inputs = tokenizer(
+        (title or "") + tokenizer.sep_token + (abstract or ""),
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+        return_token_type_ids=False,
+        max_length=512,
+    )
+    with torch.no_grad():
+        outputs = model(**model_inputs)
+    embedding_tensor = outputs.last_hidden_state[0, 0, :].detach().cpu()
+    return embedding_tensor.numpy().tolist()
+
+
+def build_publication_payload(
+    publication: dict[str, Any],
+    embedding: Sequence[float],
+    updated_on: datetime.date,
+) -> Dict[str, Any]:
+    """Construct the dataset record for a publication."""
+
+    publication_bib = publication.get("bib", {})
+    publication_bib.update({"pub_type": "article"})
+    author_segment = publication_bib.get("author", "").split(" and ")[0]
+    first_authors_last_name = (
+        author_segment.split(" ")[-1].lower() if author_segment else ""
+    )
+    first_three_words = "".join(publication_bib.get("title", "").split(" ")[:3]).lower()
+    year = str(publication_bib.get("pub_year", 0))
+    publication_bib.update(
+        {"bib_id": f"{first_authors_last_name}{year}{first_three_words}"}
+    )
+
+    cites_per_year = {
+        str(year_key): value
+        for year_key, value in publication.get("cites_per_year", {}).items()
+    }
+
+    payload: Dict[str, Any] = {
+        "bibtex": scholarly.scholarly.bibtex(publication),
+        "bib_dict": publication_bib,
+        "author_pub_id": publication.get("author_pub_id"),
+        "num_citations": publication.get("num_citations"),
+        "citedby_url": publication.get("citedby_url"),
+        "cites_id": publication.get("cites_id"),
+        "pub_url": publication.get("pub_url"),
+        "url_related_articles": publication.get("url_related_articles"),
+        "embedding": list(embedding),
+        "Last Updated": updated_on.isoformat(),
+    }
+    payload.update(cites_per_year)
+    return payload
+
+
+def refresh_publications(
+    target_ids: Sequence[str],
+    remote_publications: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Download full metadata for the target publications."""
+
+    remote_lookup = {
+        publication.get("author_pub_id"): publication
+        for publication in remote_publications
+    }
+    refreshed: list[dict[str, Any]] = []
+    for publication_id in target_ids:
+        remote_stub = remote_lookup.get(publication_id)
+        if remote_stub is None:
+            LOGGER.warning("Publication %s missing from remote list", publication_id)
+            continue
+        LOGGER.info("Fetching full metadata for %s", publication_id)
+        refreshed.append(scholarly.scholarly.fill(dict(remote_stub)))
+    return refreshed
+
+
+def merge_datasets(
+    existing_dataset: pandas.DataFrame,
+    new_records: Sequence[dict[str, Any]],
+) -> pandas.DataFrame:
+    """Merge refreshed records into the local dataset."""
+
+    if not new_records:
+        LOGGER.info("No publication updates produced; dataset will remain unchanged")
+        return existing_dataset
+
+    new_df = pandas.DataFrame.from_records(new_records)
+    updated_dataset = pandas.concat(
+        [
+            existing_dataset[
+                ~existing_dataset["author_pub_id"]
+                .astype(str)
+                .isin(new_df["author_pub_id"].astype(str))
+            ],
+            new_df,
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+    return updated_dataset.reset_index(drop=True)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Entrypoint for the update workflow."""
+
+    argv = list(argv or sys.argv)
+    if len(argv) <= HF_TOKEN_INDEX:
+        raise SystemExit("Missing Hugging Face token argument")
+
+    configure_logging()
+    hf_token = argv[HF_TOKEN_INDEX]
+
+    LOGGER.info("Loading existing dataset from %s", REPO_ID)
+    dataset = datasets.load_dataset(REPO_ID, split="train")
+    dataset_df = ensure_last_updated_column(dataset.to_pandas())
+
+    remote_publications = fetch_author_publications(AUTHOR_ID)
+    target_ids = determine_publications_to_refresh(
+        remote_publications=remote_publications,
+        existing_dataset=dataset_df,
+        max_refresh=MAX_UPDATED_PUBLICATIONS,
+    )
+
+    tokenizer, model = load_specter2_model()
+    refreshed_publications = refresh_publications(target_ids, remote_publications)
+
+    today = datetime.date.today()
+    refreshed_records: list[dict[str, Any]] = []
+    for publication in tqdm(refreshed_publications, desc="Processing publications"):
+        embedding = embed_publication_text(
+            tokenizer,
+            model,
+            publication.get("bib", {}).get("title", ""),
+            publication.get("bib", {}).get("abstract", ""),
+        )
+        refreshed_records.append(
+            build_publication_payload(
+                publication=publication, embedding=embedding, updated_on=today
             )
         )
-        .last_hidden_state[:, 0, :]
-        .detach()
-        .numpy()[0]
-    )
 
-    # Update publication info in order to format bibtex well
-    publication["bib"].update({"pub_type": "article"})
-    first_authors_last_name = (
-        publication["bib"]["author"].split(" and ")[0].split(" ")[-1].lower()
-    )
-    first_three_words_from_title = "".join(
-        publication["bib"].get("title", "").split(" ")[:3]
-    ).lower()
-    year = str(publication["bib"].get("pub_year", 0))
-    publication["bib"].update(
-        {"bib_id": first_authors_last_name + year + first_three_words_from_title}
-    )
+    merged_dataset = merge_datasets(dataset_df, refreshed_records)
 
-    # Append data to the list
-    new_publication_data.append(
-        {
-            "bibtex": scholarly.scholarly.bibtex(publication),
-            "bib_dict": publication["bib"],
-            "author_pub_id": publication.get("author_pub_id"),
-            "num_citations": publication.get("num_citations"),
-            "citedby_url": publication.get("citedby_url"),
-            "cites_id": publication.get("cites_id"),
-            "pub_url": publication.get("pub_url"),
-            "url_related_articles": publication.get("url_related_articles"),
-            **{str(k): v for k, v in publication["cites_per_year"].items()},
-            "embedding": embedding_vector,
-            "Last Updated": datetime.date.today().strftime("%Y-%m-%d"),
-        }
-    )
+    # Ensure year columns exist for the push. Create placeholders if missing.
+    current_year = datetime.date.today().year
+    for year in range(2015, current_year + 1):
+        column = str(year)
+        if column not in merged_dataset.columns:
+            merged_dataset[column] = pandas.NA
 
-# Convert to a dataset. Converting to pandas and then to dataset avoids some weird errors
-new_table = pandas.DataFrame.from_dict(new_publication_data)
-new_table.rename(columns={2024: "2024", 2025: "2025"}, inplace=True)
-new_table = pandas.concat(
-    [dataset.to_pandas(), new_table], ignore_index=True, sort=False
-)
-
-# Remove any duplicated entries in author_pub_id
-new_table = new_table.drop_duplicates(
-    subset=["author_pub_id"], keep="last"
-).reset_index(drop=True)
-
-# Remove level_0 column if it exists
-if "level_0" in new_table.columns:
-    new_table = new_table.drop(columns=["level_0"])
-
-# Make it a dataset and upload to huggingface, clean it up, and upload it to huggingface
-publication_dataset = datasets.Dataset.from_pandas(new_table)
-publication_dataset = publication_dataset.select_columns(
-    [
+    publication_dataset = datasets.Dataset.from_pandas(merged_dataset)
+    ordered_columns = [
         "bibtex",
         "bib_dict",
         "author_pub_id",
@@ -174,7 +319,15 @@ publication_dataset = publication_dataset.select_columns(
         "url_related_articles",
         "embedding",
         "Last Updated",
+    ] + [str(year) for year in range(2015, current_year + 1)]
+    available_columns = [
+        col for col in ordered_columns if col in publication_dataset.column_names
     ]
-    + [str(year) for year in range(2015, datetime.date.today().year + 1)]
-)
-publication_dataset.push_to_hub(REPO_ID, token=HF_TOKEN)
+    publication_dataset = publication_dataset.select_columns(available_columns)
+
+    LOGGER.info("Pushing dataset updates to Hugging Face Hub")
+    publication_dataset.push_to_hub(REPO_ID, token=hf_token)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

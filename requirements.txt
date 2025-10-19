@@ -6,3 +6,4 @@ adapters
 datasets
 pandas
 torch
+pytest
