@@ -9,8 +9,9 @@ from Google Scholar.
 The update logic operates in two phases:
 
 1. Perform a lightweight metadata sync to discover publication identifiers.
-2. If new publications exist, fully download ("fill") and embed those entries.
-   Otherwise refresh a small batch of the stalest publications.
+2. Always download ("fill") and embed newly discovered publications.
+3. Refresh a small batch of the stalest publications each run to keep
+   historical records reasonably fresh.
 
 The file exposes ``main`` so the behavior can be unit-tested without triggering
 network calls on import.
@@ -22,6 +23,7 @@ import datetime
 import logging
 import sys
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import datasets
@@ -35,7 +37,7 @@ from transformers import AutoTokenizer
 HF_TOKEN_INDEX = 1
 REPO_ID = "ccm/publications"
 AUTHOR_ID = "0P9w_S0AAAAJ"
-MAX_UPDATED_PUBLICATIONS = 2
+STALE_PUBLICATION_REFRESH_LIMIT = 10
 SPECTER_MODEL_NAME = "allenai/specter2_base"
 SPECTER_ADAPTER_NAME = "allenai/specter2"
 LOGGER = logging.getLogger(__name__)
@@ -108,12 +110,26 @@ def parse_last_updated(value: Any) -> datetime.date:
     return datetime.date.min
 
 
+@dataclass(frozen=True)
+class PublicationRefreshPlan:
+    """Plan describing which publications should be refreshed."""
+
+    new_publication_ids: List[str]
+    stale_publication_ids: List[str]
+
+    @property
+    def ordered_ids(self) -> List[str]:
+        """Return publication identifiers in refresh order."""
+
+        return [*self.new_publication_ids, *self.stale_publication_ids]
+
+
 def determine_publications_to_refresh(
     remote_publications: Iterable[dict[str, Any]],
     existing_dataset: pandas.DataFrame,
-    max_refresh: int,
-) -> list[str]:
-    """Return publication identifiers that should be refreshed."""
+    stale_refresh_limit: int,
+) -> PublicationRefreshPlan:
+    """Return a refresh plan for new and stale publications."""
 
     existing_dataset = ensure_last_updated_column(existing_dataset.copy())
     existing_ids: set[str] = set(
@@ -130,24 +146,34 @@ def determine_publications_to_refresh(
     new_ids = [pub_id for pub_id in remote_ids if pub_id not in existing_ids]
     if new_ids:
         LOGGER.info("Identified %d new publications", len(new_ids))
-        return new_ids
 
-    LOGGER.info("No new publications discovered; refreshing stale entries")
     working_df = existing_dataset.copy()
-    working_df["_parsed_last_updated"] = working_df["Last Updated"].apply(
-        parse_last_updated
-    )
-    working_df["author_pub_id"] = working_df["author_pub_id"].astype(str)
-
-    refreshed_ids = (
-        working_df.sort_values(
-            by=["_parsed_last_updated", "author_pub_id"],
-            ascending=[True, True],
+    if not working_df.empty and stale_refresh_limit > 0:
+        working_df = working_df.copy()
+        working_df["author_pub_id"] = working_df["author_pub_id"].astype(str)
+        working_df = working_df[working_df["author_pub_id"].isin(remote_ids)]
+        if new_ids:
+            working_df = working_df[
+                ~working_df["author_pub_id"].isin(new_ids)
+            ]
+        working_df["_parsed_last_updated"] = working_df["Last Updated"].apply(
+            parse_last_updated
         )
-        .head(max_refresh)["author_pub_id"]
-        .tolist()
-    )
-    return refreshed_ids
+        stale_ids = (
+            working_df.sort_values(
+                by=["_parsed_last_updated", "author_pub_id"],
+                ascending=[True, True],
+            )
+            .head(stale_refresh_limit)["author_pub_id"]
+            .tolist()
+        )
+    else:
+        stale_ids = []
+
+    if stale_ids:
+        LOGGER.info("Scheduled %d existing publications for refresh", len(stale_ids))
+
+    return PublicationRefreshPlan(new_publication_ids=new_ids, stale_publication_ids=stale_ids)
 
 
 def embed_publication_text(
@@ -274,14 +300,25 @@ def main(argv: Sequence[str] | None = None) -> None:
     dataset_df = ensure_last_updated_column(dataset.to_pandas())
 
     remote_publications = fetch_author_publications(AUTHOR_ID)
-    target_ids = determine_publications_to_refresh(
+    refresh_plan = determine_publications_to_refresh(
         remote_publications=remote_publications,
         existing_dataset=dataset_df,
-        max_refresh=MAX_UPDATED_PUBLICATIONS,
+        stale_refresh_limit=STALE_PUBLICATION_REFRESH_LIMIT,
     )
 
+    if refresh_plan.new_publication_ids or refresh_plan.stale_publication_ids:
+        LOGGER.info(
+            "Refreshing %d new and %d existing publications",
+            len(refresh_plan.new_publication_ids),
+            len(refresh_plan.stale_publication_ids),
+        )
+    else:
+        LOGGER.info("No publications selected for refresh")
+
     tokenizer, model = load_specter2_model()
-    refreshed_publications = refresh_publications(target_ids, remote_publications)
+    refreshed_publications = refresh_publications(
+        refresh_plan.ordered_ids, remote_publications
+    )
 
     today = datetime.date.today()
     refreshed_records: list[dict[str, Any]] = []

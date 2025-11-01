@@ -25,11 +25,12 @@ def test_selects_new_publications_when_available() -> None:
         [{"author_pub_id": "pub1", "Last Updated": "2024-01-01"}]
     )
 
-    selection = determine_publications_to_refresh(
-        remote_publications, existing_dataset, 2
+    plan = determine_publications_to_refresh(
+        remote_publications, existing_dataset, stale_refresh_limit=2
     )
 
-    assert selection == ["pub2", "pub3"]
+    assert plan.new_publication_ids == ["pub2", "pub3"]
+    assert plan.stale_publication_ids == ["pub1"]
 
 
 def test_refreshes_stalest_publications_when_no_new_entries() -> None:
@@ -48,11 +49,37 @@ def test_refreshes_stalest_publications_when_no_new_entries() -> None:
         ]
     )
 
-    selection = determine_publications_to_refresh(
-        remote_publications, existing_dataset, 2
+    plan = determine_publications_to_refresh(
+        remote_publications, existing_dataset, stale_refresh_limit=2
     )
 
-    assert selection == ["pub2", "pub3"]
+    assert plan.new_publication_ids == []
+    assert plan.stale_publication_ids == ["pub2", "pub3"]
+
+
+def test_includes_stale_refreshes_when_new_publications_exist() -> None:
+    """New publications should not block background refreshes."""
+
+    remote_publications = [
+        {"author_pub_id": "pub1"},
+        {"author_pub_id": "pub2"},
+        {"author_pub_id": "pub3"},
+        {"author_pub_id": "pub4"},
+    ]
+    existing_dataset = pandas.DataFrame(
+        [
+            {"author_pub_id": "pub1", "Last Updated": "2024-01-03"},
+            {"author_pub_id": "pub2", "Last Updated": "2023-12-01"},
+            {"author_pub_id": "pub3", "Last Updated": "2023-12-02"},
+        ]
+    )
+
+    plan = determine_publications_to_refresh(
+        remote_publications, existing_dataset, stale_refresh_limit=1
+    )
+
+    assert plan.new_publication_ids == ["pub4"]
+    assert plan.stale_publication_ids == ["pub2"]
 
 
 def test_last_updated_column_added_when_missing() -> None:
