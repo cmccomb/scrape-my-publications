@@ -1,30 +1,60 @@
 # scrape-my-publications
 
-## Overview
+This repository synchronizes Chris McComb's Google Scholar profile to the
+[`ccm/publications`](https://huggingface.co/datasets/ccm/publications) dataset.
+The website repository then turns that dataset into the interactive publication
+graph at [cmccomb.com](https://cmccomb.com/).
 
-`scrape-my-publications` synchronizes the [`ccm/publications`](https://huggingface.co/datasets/ccm/publications)
-dataset with metadata from Google Scholar. The workflow keeps the dataset up to
-date by discovering new publications for a target author, generating SPECTER2
-embeddings, and periodically refreshing existing entries.
+## Monthly refresh
 
-## Update workflow
+The scheduled workflow runs on the first day of each month and:
 
-The automated job performs the following steps:
+1. retrieves the current list of Scholar publication identifiers;
+2. adds up to 25 newly discovered publications;
+3. refreshes five of the stalest existing publications;
+4. waits between detail requests and retries transient Scholar failures;
+5. generates SPECTER2 embeddings only for refreshed records;
+6. pushes the merged dataset to Hugging Face; and
+7. commits a non-sensitive status record to `status/last-refresh.json`.
 
-1. **Author sync** – perform a lightweight `scholarly.fill` on the author to
-   retrieve the current list of publication identifiers.
-2. **New publication ingest** – fully fetch metadata for any new publications
-   that are not yet present in the dataset and add them to the corpus.
-3. **Background refresh** – update a small batch of the stalest publications on
-   each run (currently limited to ten items) so historical records gradually
-   receive fresh metadata.
-4. **Embedding generation** – build SPECTER2 embeddings for every refreshed
-   publication.
-5. **Dataset push** – merge the refreshed records back into the existing
-   dataset and push the results to the Hugging Face Hub.
+The status commit provides a durable success/failure audit trail and keeps the
+public repository active so GitHub does not silently disable scheduled runs.
+The website graph refresh runs separately on the second day of each month,
+after this dataset update has had time to finish.
 
-## Development
+The main workflow also exposes a manual `full_refresh` input. Use it for an
+occasional clean baseline. It mirrors the current Scholar profile, drops
+records no longer present, updates citation totals for every retained record,
+and fetches full details plus embeddings for newly discovered works. Existing
+embeddings are preserved. The separate full-dataset re-embedding workflow is
+also manual-only. Normal monthly updates should use the incremental refresh.
 
-Install dependencies with `pip install -r requirements.txt` and run `pytest`
-to execute the unit tests. The codebase targets Python 3.11 and expects the
-standard tooling defined in `requirements.txt` to be available.
+## Local checks
+
+Install the pinned test environment and run the unit tests:
+
+```bash
+python -m pip install --requirement requirements-dev.txt
+python -m pytest
+```
+
+Inspect the current refresh plan without downloading publication details,
+loading the embedding model, or uploading data:
+
+```bash
+python main.py --plan-only --status-file status/local-plan.json
+```
+
+Run a full refresh without uploading it:
+
+```bash
+python main.py --full-refresh --dry-run --status-file status/local-dry-run.json
+```
+
+Production uploads read the Hugging Face credential from the `HF_TOKEN`
+environment variable. Tokens are never accepted as command-line arguments or
+written to status files.
+
+The AllenAI SPECTER2 base model and adapter are pinned to immutable Hugging
+Face commit SHAs. Remote model code is disabled, and automation never accepts
+an arbitrary model repository or checkpoint.
