@@ -1,0 +1,12 @@
+{
+  "author_id": "0P9w_S0AAAAJ",
+  "dataset_id": "ccm/publications",
+  "error_type": "MaxTriesExceededException",
+  "finished_at_utc": "2026-07-17T14:42:39.919452+00:00",
+  "refresh_mode": "full",
+  "schema_version": 1,
+  "started_at_utc": "2026-07-17T14:02:29.736738+00:00",
+  "status": "failure",
+  "upload_performed": false,
+  "workflow_url": "https://github.com/cmccomb/scrape-my-publications/actions/runs/29586205980"
+}
