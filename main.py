@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import logging
 import math
@@ -36,6 +37,7 @@ SPECTER_MODEL_REVISION = "3447645e1def9117997203454fa4495937bfbd83"
 SPECTER_ADAPTER_NAME = "allenai/specter2"
 SPECTER_ADAPTER_REVISION = "2081559630a80fc5851d8f798a05ba81e9468089"
 STATUS_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 1
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
 
@@ -468,6 +470,51 @@ class SyncResult:
     upload_performed: bool
     dataset_commit: str | None
     refresh_mode: str
+    snapshot_written: bool = False
+    snapshot_sha256: str | None = None
+
+
+def write_publication_snapshot(
+    publication_dataset: Any,
+    snapshot_path: Path,
+    *,
+    discovered_publications: int,
+    new_publications: int,
+    stale_publications: int,
+    metadata_only_publications: int,
+    refreshed_publications: int,
+    refresh_mode: str,
+) -> str:
+    """Atomically write a validated Parquet snapshot and signed manifest."""
+
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = snapshot_path.with_suffix(snapshot_path.suffix + ".tmp")
+    try:
+        publication_dataset.to_parquet(str(temporary_path))
+        snapshot_sha256 = hashlib.sha256(temporary_path.read_bytes()).hexdigest()
+        os.replace(temporary_path, snapshot_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+    manifest = {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "status": "success",
+        "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "dataset_id": REPO_ID,
+        "author_id": AUTHOR_ID,
+        "snapshot_file": snapshot_path.name,
+        "snapshot_sha256": snapshot_sha256,
+        "dataset_rows": len(publication_dataset),
+        "discovered_publications": discovered_publications,
+        "new_publications": new_publications,
+        "stale_publications": stale_publications,
+        "metadata_only_publications": metadata_only_publications,
+        "refreshed_publications": refreshed_publications,
+        "refresh_mode": refresh_mode,
+    }
+    manifest_path = snapshot_path.with_suffix(snapshot_path.suffix + ".manifest.json")
+    write_status(manifest_path, manifest)
+    return snapshot_sha256
 
 
 def run_sync(
@@ -479,6 +526,7 @@ def run_sync(
     plan_only: bool,
     dry_run: bool,
     full_refresh: bool,
+    snapshot_path: Path | None = None,
 ) -> SyncResult:
     """Execute a full or bounded Scholar-to-Hugging-Face synchronization."""
 
@@ -586,6 +634,20 @@ def run_sync(
         preserve_index=False,
     ).select_columns(ordered_columns)
 
+    snapshot_sha256 = None
+    if snapshot_path is not None:
+        snapshot_sha256 = write_publication_snapshot(
+            publication_dataset,
+            snapshot_path,
+            discovered_publications=len(remote_publications),
+            new_publications=len(refresh_plan.new_publication_ids),
+            stale_publications=len(refresh_plan.stale_publication_ids),
+            metadata_only_publications=len(refresh_plan.metadata_only_publication_ids),
+            refreshed_publications=len(refreshed_records),
+            refresh_mode=refresh_mode,
+        )
+        LOGGER.info("Wrote publication snapshot to %s", snapshot_path)
+
     dataset_commit = None
     upload_performed = False
     should_upload = bool(refreshed_records) or full_refresh
@@ -613,6 +675,8 @@ def run_sync(
         upload_performed,
         dataset_commit,
         refresh_mode,
+        snapshot_path is not None,
+        snapshot_sha256,
     )
 
 
@@ -647,6 +711,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--request-delay", type=float, default=SCHOLAR_REQUEST_DELAY_SECONDS)
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--snapshot-path",
+        type=Path,
+        help="Write the validated merged dataset to this Parquet snapshot",
+    )
     parser.add_argument(
         "--full-refresh",
         action="store_true",
@@ -684,6 +753,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan_only=args.plan_only,
             dry_run=args.dry_run,
             full_refresh=args.full_refresh,
+            snapshot_path=args.snapshot_path,
         )
         status.update({
             "status": "success",
@@ -696,6 +766,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "upload_performed": result.upload_performed,
             "dataset_commit": result.dataset_commit,
             "refresh_mode": result.refresh_mode,
+            "snapshot_written": result.snapshot_written,
+            "snapshot_sha256": result.snapshot_sha256,
             "error_type": None,
         })
         exit_code = 0
