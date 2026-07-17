@@ -1,12 +1,20 @@
 {
   "author_id": "0P9w_S0AAAAJ",
+  "dataset_commit": "e9bb184e607da93d3c84d629c901437ccb1880fd",
   "dataset_id": "ccm/publications",
-  "error_type": "MaxTriesExceededException",
-  "finished_at_utc": "2026-07-17T14:42:39.919452+00:00",
+  "dataset_rows": 262,
+  "discovered_publications": 262,
+  "error_type": null,
+  "finished_at_utc": "2026-07-17T15:56:36.822029+00:00",
+  "metadata_only_publications": 231,
+  "new_publications": 31,
   "refresh_mode": "full",
+  "refreshed_publications": 31,
   "schema_version": 1,
-  "started_at_utc": "2026-07-17T14:02:29.736738+00:00",
-  "status": "failure",
-  "upload_performed": false,
-  "workflow_url": "https://github.com/cmccomb/scrape-my-publications/actions/runs/29586205980"
+  "snapshot_sha256": "23be2033854727590bcc80961715bed8215a1204ec87ec1d289412b86ebe1794",
+  "stale_publications": 0,
+  "started_at_utc": "2026-07-17T15:56:31.837020+00:00",
+  "status": "success",
+  "upload_performed": true,
+  "workflow_url": "https://github.com/cmccomb/scrape-my-publications/actions/runs/29594106335"
 }
