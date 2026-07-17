@@ -1,16 +1,16 @@
 {
   "author_id": "0P9w_S0AAAAJ",
-  "created_at_utc": "2026-07-17T15:20:18.210028+00:00",
+  "created_at_utc": "2026-07-17T16:12:56.441929+00:00",
   "dataset_id": "ccm/publications",
   "dataset_rows": 262,
   "discovered_publications": 262,
-  "metadata_only_publications": 231,
-  "new_publications": 31,
-  "refresh_mode": "full",
-  "refreshed_publications": 31,
+  "metadata_only_publications": 0,
+  "new_publications": 0,
+  "refresh_mode": "incremental",
+  "refreshed_publications": 5,
   "schema_version": 1,
   "snapshot_file": "publications.parquet",
-  "snapshot_sha256": "23be2033854727590bcc80961715bed8215a1204ec87ec1d289412b86ebe1794",
-  "stale_publications": 0,
+  "snapshot_sha256": "16a7bc0385dcba1da8040c40535fefc9cef26edf743f2d6187eb2c20ce9935d4",
+  "stale_publications": 5,
   "status": "success"
 }
