@@ -14,6 +14,12 @@ from typing import Any, Sequence
 
 import datasets  # type: ignore[import-untyped]
 import pandas  # type: ignore[import-untyped]
+from datasets.info import DatasetInfosDict  # type: ignore[import-untyped]
+from huggingface_hub import (  # type: ignore[import-untyped]
+    DatasetCardData,
+    HfApi,
+    metadata_update,
+)
 
 from main import (
     AUTHOR_ID,
@@ -88,6 +94,38 @@ def load_and_validate_snapshot(
     return snapshot_df, manifest
 
 
+def prepare_publication_dataset(
+    snapshot_df: pandas.DataFrame,
+) -> datasets.Dataset:
+    """Build the canonical Hub dataset from a validated snapshot."""
+
+    publication_dataset = datasets.Dataset.from_pandas(
+        snapshot_df,
+        preserve_index=False,
+    ).select_columns(list(snapshot_df.columns))
+    features = publication_dataset.features.copy()
+    features["embedding"] = datasets.List(datasets.Value("float32"))
+    return publication_dataset.cast(features)
+
+
+def build_dataset_metadata(
+    publication_dataset: datasets.Dataset,
+) -> dict[str, Any]:
+    """Return complete Hub metadata for the dataset's current schema."""
+
+    dataset_info = publication_dataset.info.copy()
+    dataset_info.splits = datasets.SplitDict({
+        "train": datasets.SplitInfo(
+            name="train",
+            num_bytes=publication_dataset.data.nbytes,
+            num_examples=len(publication_dataset),
+        )
+    })
+    card_data = DatasetCardData()
+    DatasetInfosDict({"default": dataset_info}).to_dataset_card_data(card_data)
+    return {"dataset_info": card_data.to_dict()["dataset_info"]}
+
+
 def upload_snapshot(
     snapshot_path: Path,
     manifest_path: Path,
@@ -102,16 +140,35 @@ def upload_snapshot(
         manifest_path,
         max_age_days=max_age_days,
     )
-    publication_dataset = datasets.Dataset.from_pandas(
-        snapshot_df,
-        preserve_index=False,
-    ).select_columns(list(snapshot_df.columns))
+    publication_dataset = prepare_publication_dataset(snapshot_df)
     commit_info = publication_dataset.push_to_hub(
         REPO_ID,
         token=hf_token,
         commit_message="Upload validated Google Scholar snapshot",
     )
-    return getattr(commit_info, "oid", None), manifest
+    data_commit = getattr(commit_info, "oid", None)
+    if not data_commit:
+        raise RuntimeError("Dataset upload did not return a Hub commit")
+
+    # datasets 5.0 preserves the prior feature declaration when replacing an
+    # existing split. Replace dataset_info explicitly so newly added year
+    # columns and canonical feature types remain loadable from the Hub.
+    metadata_update(
+        REPO_ID,
+        build_dataset_metadata(publication_dataset),
+        repo_type="dataset",
+        overwrite=True,
+        token=hf_token,
+        commit_message="Refresh publication dataset schema",
+        parent_commit=data_commit,
+    )
+    final_commit = HfApi(token=hf_token).dataset_info(
+        REPO_ID,
+        revision="main",
+    ).sha
+    if not final_commit:
+        raise RuntimeError("Dataset metadata update did not return a Hub commit")
+    return final_commit, manifest
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

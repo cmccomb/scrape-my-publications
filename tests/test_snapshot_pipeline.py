@@ -7,6 +7,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import datasets
 import pandas
@@ -17,7 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from main import write_publication_snapshot
-from upload_snapshot import load_and_validate_snapshot
+import upload_snapshot as snapshot_uploader
+from upload_snapshot import (
+    build_dataset_metadata,
+    load_and_validate_snapshot,
+    prepare_publication_dataset,
+)
 
 
 def _publication_dataset() -> datasets.Dataset:
@@ -29,6 +35,7 @@ def _publication_dataset() -> datasets.Dataset:
                 "embedding": [0.1, 0.2, 0.3],
                 "num_citations": 4,
                 "Last Updated": "2026-07-17",
+                "2026": 4.0,
             },
             {
                 "author_pub_id": "author:two",
@@ -36,6 +43,7 @@ def _publication_dataset() -> datasets.Dataset:
                 "embedding": [0.4, 0.5, 0.6],
                 "num_citations": 2,
                 "Last Updated": "2026-07-17",
+                "2026": 2.0,
             },
         ]
     )
@@ -104,3 +112,85 @@ def test_full_snapshot_must_match_discovered_profile(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="exactly mirror"):
         load_and_validate_snapshot(snapshot_path, manifest_path)
+
+
+def test_hub_dataset_uses_canonical_embedding_type() -> None:
+    """The uploaded Parquet schema should match the declared Hub schema."""
+
+    publication_dataset = prepare_publication_dataset(
+        _publication_dataset().to_pandas()
+    )
+
+    assert publication_dataset.features["embedding"] == datasets.List(
+        datasets.Value("float32")
+    )
+
+
+def test_hub_metadata_replaces_features_and_split_details() -> None:
+    """Current year columns and row counts must be published to the card."""
+
+    publication_dataset = prepare_publication_dataset(
+        _publication_dataset().to_pandas()
+    )
+    metadata = build_dataset_metadata(publication_dataset)["dataset_info"]
+    feature_names = [feature["name"] for feature in metadata["features"]]
+
+    assert "2026" in feature_names
+    assert metadata["splits"] == [{
+        "name": "train",
+        "num_bytes": publication_dataset.data.nbytes,
+        "num_examples": 2,
+    }]
+
+
+def test_upload_replaces_stale_hub_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The trusted upload must publish schema metadata after the data commit."""
+
+    snapshot_path, manifest_path = _write_snapshot(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_push_to_hub(
+        publication_dataset: datasets.Dataset,
+        repo_id: str,
+        **kwargs: object,
+    ) -> SimpleNamespace:
+        captured["features"] = publication_dataset.features
+        captured["repo_id"] = repo_id
+        return SimpleNamespace(oid="data-commit")
+
+    def fake_metadata_update(
+        repo_id: str,
+        metadata: dict[str, object],
+        **kwargs: object,
+    ) -> str:
+        captured["metadata_repo_id"] = repo_id
+        captured["metadata"] = metadata
+        captured["parent_commit"] = kwargs["parent_commit"]
+        return "https://huggingface.co/datasets/ccm/publications/commit/final-commit"
+
+    class FakeHfApi:
+        def __init__(self, *, token: str) -> None:
+            captured["token"] = token
+
+        def dataset_info(self, repo_id: str, *, revision: str) -> SimpleNamespace:
+            captured["revision"] = revision
+            return SimpleNamespace(sha="final-commit")
+
+    monkeypatch.setattr(datasets.Dataset, "push_to_hub", fake_push_to_hub)
+    monkeypatch.setattr(snapshot_uploader, "metadata_update", fake_metadata_update)
+    monkeypatch.setattr(snapshot_uploader, "HfApi", FakeHfApi)
+
+    commit, _manifest = snapshot_uploader.upload_snapshot(
+        snapshot_path,
+        manifest_path,
+        hf_token="test-token",
+    )
+
+    assert commit == "final-commit"
+    assert captured["repo_id"] == "ccm/publications"
+    assert captured["metadata_repo_id"] == "ccm/publications"
+    assert captured["parent_commit"] == "data-commit"
+    assert captured["revision"] == "main"
