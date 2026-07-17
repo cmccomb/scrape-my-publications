@@ -21,7 +21,9 @@ concurrency:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    # Google Scholar rejects the shared Linux runner network with HTTP 403.
+    # GitHub's macOS runner pool uses a separate egress network.
+    runs-on: macos-14
     timeout-minutes: 45
     environment: upload
     steps:
