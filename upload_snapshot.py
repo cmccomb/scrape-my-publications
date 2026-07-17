@@ -16,6 +16,7 @@ import datasets  # type: ignore[import-untyped]
 import pandas  # type: ignore[import-untyped]
 from datasets.info import DatasetInfosDict  # type: ignore[import-untyped]
 from huggingface_hub import (  # type: ignore[import-untyped]
+    DatasetCard,
     DatasetCardData,
     HfApi,
     metadata_update,
@@ -34,6 +35,10 @@ from main import (
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MAX_SNAPSHOT_AGE_DAYS = 7
+DEFAULT_DATASET_CONFIG = "default"
+# Dataset card metadata persists the first two values.  ``size_in_bytes`` is
+# derived by datasets and intentionally omitted from the card's YAML schema.
+DATASET_SIZE_FIELDS = ("download_size", "dataset_size")
 
 
 def load_and_validate_snapshot(
@@ -110,20 +115,99 @@ def prepare_publication_dataset(
 
 def build_dataset_metadata(
     publication_dataset: datasets.Dataset,
+    *,
+    dataset_info: datasets.DatasetInfo | None = None,
 ) -> dict[str, Any]:
-    """Return complete Hub metadata for the dataset's current schema."""
+    """Return Hub metadata with the dataset's current feature schema.
 
-    dataset_info = publication_dataset.info.copy()
-    dataset_info.splits = datasets.SplitDict({
-        "train": datasets.SplitInfo(
-            name="train",
-            num_bytes=publication_dataset.data.nbytes,
-            num_examples=len(publication_dataset),
-        )
-    })
+    When Hub has already calculated split and size information, callers pass
+    that record so a schema repair does not erase those calculated values.
+    """
+
+    current_info = (
+        dataset_info.copy()
+        if dataset_info is not None
+        else publication_dataset.info.copy()
+    )
+    current_info.features = publication_dataset.features
+    if not current_info.splits:
+        current_info.splits = datasets.SplitDict({
+            "train": datasets.SplitInfo(
+                name="train",
+                num_bytes=publication_dataset.data.nbytes,
+                num_examples=len(publication_dataset),
+            )
+        })
     card_data = DatasetCardData()
-    DatasetInfosDict({"default": dataset_info}).to_dataset_card_data(card_data)
+    DatasetInfosDict({DEFAULT_DATASET_CONFIG: current_info}).to_dataset_card_data(
+        card_data
+    )
     return {"dataset_info": card_data.to_dict()["dataset_info"]}
+
+
+def get_hub_dataset_info(*, hf_token: str) -> datasets.DatasetInfo | None:
+    """Return the existing default configuration metadata, if declared."""
+
+    card = DatasetCard.load(REPO_ID, repo_type="dataset", token=hf_token)
+    infos = DatasetInfosDict.from_dataset_card_data(card.data)
+    return infos.get(DEFAULT_DATASET_CONFIG)
+
+
+def repair_hub_dataset_metadata_if_needed(
+    *,
+    hf_token: str,
+) -> datasets.DatasetInfo | None:
+    """Restore missing Hub size metadata before replacing an existing split.
+
+    ``datasets`` needs these values when it replaces a split.  A prior schema
+    repair inadvertently wrote them as null, so repair a legacy card once
+    using the current repository and dataset sizes before the next upload.
+    """
+
+    api = HfApi(token=hf_token)
+    if not api.repo_exists(REPO_ID, repo_type="dataset"):
+        return None
+
+    existing_info = get_hub_dataset_info(hf_token=hf_token)
+    if existing_info is None or not any(
+        getattr(existing_info, field) is None for field in DATASET_SIZE_FIELDS
+    ):
+        return existing_info
+
+    current_commit = api.dataset_info(REPO_ID, revision="main").sha
+    if not current_commit:
+        raise RuntimeError("Could not determine the current dataset commit")
+    existing_dataset = datasets.load_dataset(
+        REPO_ID,
+        revision="main",
+        split="train",
+        token=hf_token,
+    )
+    download_size = sum(
+        item.size
+        for item in api.list_repo_tree(
+            REPO_ID,
+            repo_type="dataset",
+            revision="main",
+            recursive=True,
+        )
+        if getattr(item, "path", "").startswith("data/")
+        and getattr(item, "size", None) is not None
+    )
+    repaired_info = existing_info.copy()
+    repaired_info.download_size = download_size
+    repaired_info.dataset_size = existing_dataset.data.nbytes
+    repaired_info.size_in_bytes = download_size + existing_dataset.data.nbytes
+    metadata_update(
+        REPO_ID,
+        build_dataset_metadata(existing_dataset, dataset_info=repaired_info),
+        repo_type="dataset",
+        overwrite=True,
+        token=hf_token,
+        commit_message="Repair publication dataset size metadata",
+        parent_commit=current_commit,
+    )
+    return repaired_info
 
 
 def upload_snapshot(
@@ -141,6 +225,9 @@ def upload_snapshot(
         max_age_days=max_age_days,
     )
     publication_dataset = prepare_publication_dataset(snapshot_df)
+    # A legacy schema repair produced a card with null size values.  Correct
+    # that state before datasets replaces the old train split.
+    repair_hub_dataset_metadata_if_needed(hf_token=hf_token)
     commit_info = publication_dataset.push_to_hub(
         REPO_ID,
         token=hf_token,
@@ -151,11 +238,15 @@ def upload_snapshot(
         raise RuntimeError("Dataset upload did not return a Hub commit")
 
     # datasets 5.0 preserves the prior feature declaration when replacing an
-    # existing split. Replace dataset_info explicitly so newly added year
-    # columns and canonical feature types remain loadable from the Hub.
+    # existing split. Replace only the feature declaration so newly added year
+    # columns and canonical feature types remain loadable without discarding
+    # the split and size values calculated by the upload.
+    hub_info = get_hub_dataset_info(hf_token=hf_token)
+    if hub_info is not None and hub_info.features == publication_dataset.features:
+        return data_commit, manifest
     metadata_update(
         REPO_ID,
-        build_dataset_metadata(publication_dataset),
+        build_dataset_metadata(publication_dataset, dataset_info=hub_info),
         repo_type="dataset",
         overwrite=True,
         token=hf_token,
