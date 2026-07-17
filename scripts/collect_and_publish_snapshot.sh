@@ -58,8 +58,8 @@ git config user.name "The McComb Agency automation"
 git config user.email "the.mccomb.agency@gmail.com"
 git add \
   snapshots/publications.parquet \
-  snapshots/publications.parquet.manifest.json \
-  status/last-collector.json
+  snapshots/publications.parquet.manifest.json
+git add --force status/last-collector.json
 
 if git diff --cached --quiet; then
   printf 'The validated publication snapshot is unchanged.\n'
