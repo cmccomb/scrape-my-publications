@@ -1,0 +1,16 @@
+{
+  "author_id": "0P9w_S0AAAAJ",
+  "created_at_utc": "2026-07-17T15:20:18.210028+00:00",
+  "dataset_id": "ccm/publications",
+  "dataset_rows": 262,
+  "discovered_publications": 262,
+  "metadata_only_publications": 231,
+  "new_publications": 31,
+  "refresh_mode": "full",
+  "refreshed_publications": 31,
+  "schema_version": 1,
+  "snapshot_file": "publications.parquet",
+  "snapshot_sha256": "23be2033854727590bcc80961715bed8215a1204ec87ec1d289412b86ebe1794",
+  "stale_publications": 0,
+  "status": "success"
+}

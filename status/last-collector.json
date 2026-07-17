@@ -1,0 +1,21 @@
+{
+  "author_id": "0P9w_S0AAAAJ",
+  "dataset_commit": null,
+  "dataset_id": "ccm/publications",
+  "dataset_rows": 262,
+  "discovered_publications": 262,
+  "error_type": null,
+  "finished_at_utc": "2026-07-17T15:20:18.212631+00:00",
+  "metadata_only_publications": 231,
+  "new_publications": 31,
+  "refresh_mode": "full",
+  "refreshed_publications": 31,
+  "schema_version": 1,
+  "snapshot_sha256": "23be2033854727590bcc80961715bed8215a1204ec87ec1d289412b86ebe1794",
+  "snapshot_written": true,
+  "stale_publications": 0,
+  "started_at_utc": "2026-07-17T15:18:13.133310+00:00",
+  "status": "success",
+  "upload_performed": false,
+  "workflow_url": null
+}
