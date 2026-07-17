@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: scholar-publication-refresh-v2
+  group: scholar-publication-refresh-v3
   cancel-in-progress: false
 
 jobs:
