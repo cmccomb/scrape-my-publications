@@ -1,51 +1,62 @@
-import sys  # Used to read token argument from command line
+"""Manually rebuild every publication embedding in the Hugging Face dataset."""
 
-import datasets  # Used to upload to huggingface
-import pandas  # Used to convert to a dataset
-from adapters import AutoAdapterModel
-from tqdm.auto import tqdm  # Used to show progress bar
-from transformers import AutoTokenizer
+from __future__ import annotations
 
-# Constants for settings
-HF_TOKEN = sys.argv[1]  # Get API token from command line
-REPO_ID = "ccm/publications"  # Huggingface repo ID
-AUTHOR_ID = "0P9w_S0AAAAJ"  # Author ID for Google Scholar
-MAX_UPDATED_PUBLICATIONS = 10  # Max number of old publications to update at a time
+import logging
+import os
 
-# Load embedding model and tokenizer
-tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
-model = AutoAdapterModel.from_pretrained("allenai/specter2_base")
-model.load_adapter("allenai/specter2", source="hf", load_as="specter2", set_active=True)
+from tqdm.auto import tqdm
 
-# Download the repo from REPO_ID using datasets
-dataset = (
-    datasets.load_dataset(REPO_ID, split="train").to_pandas().to_dict(orient="records")
+from main import (
+    HF_TOKEN_ENV,
+    REPO_ID,
+    embed_publication_text,
+    load_specter2_model,
 )
 
-# Iterate through publications and fill
-for i in tqdm(range(len(dataset)), desc="Processing new publications"):
+LOGGER = logging.getLogger(__name__)
 
-    # Embed the title and abstract
-    embedding_vector = (
-        model(
-            **tokenizer(
-                (dataset[i]["bib_dict"].get("title") or "")
-                + tokenizer.sep_token
-                + (dataset[i]["bib_dict"].get("abstract") or ""),
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                return_token_type_ids=False,
-                max_length=512,
-            )
-        )
-        .last_hidden_state[:, 0, :]
-        .detach()
-        .numpy()[0]
+
+def main() -> int:
+    """Re-embed all rows and upload them as an explicit maintenance operation."""
+
+    import datasets
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
+    hf_token = os.environ.get(HF_TOKEN_ENV)
+    if not hf_token:
+        raise RuntimeError(f"Missing {HF_TOKEN_ENV} environment variable")
 
-    dataset[i]["embedding"] = embedding_vector
+    LOGGER.info("Loading %s", REPO_ID)
+    dataset_df = datasets.load_dataset(REPO_ID, split="train").to_pandas()
+    tokenizer, model = load_specter2_model()
 
-# Upload to huggingface
-dataset = datasets.Dataset.from_pandas(pandas.DataFrame.from_dict(dataset))
-dataset.push_to_hub(REPO_ID, token=HF_TOKEN)
+    embeddings: list[list[float]] = []
+    for bibliography in tqdm(dataset_df["bib_dict"], desc="Embedding publications"):
+        bibliography = bibliography or {}
+        embeddings.append(embed_publication_text(
+            tokenizer,
+            model,
+            str(bibliography.get("title") or ""),
+            str(bibliography.get("abstract") or ""),
+        ))
+    dataset_df["embedding"] = embeddings
+
+    rebuilt_dataset = datasets.Dataset.from_pandas(
+        dataset_df,
+        preserve_index=False,
+    )
+    LOGGER.info("Uploading %d rebuilt rows", len(rebuilt_dataset))
+    rebuilt_dataset.push_to_hub(
+        REPO_ID,
+        token=hf_token,
+        commit_message="Rebuild all SPECTER2 embeddings",
+    )
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
