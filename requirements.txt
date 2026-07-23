@@ -1,4 +1,3 @@
-adapters==1.3.0
 datasets==5.0.0
 pandas==3.0.3
 scholarly==1.7.11

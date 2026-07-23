@@ -77,6 +77,8 @@ Hugging Face credential from the `HF_TOKEN` environment variable. Tokens are
 never accepted as command-line arguments, exposed to the local collector, or
 written to snapshots and status files.
 
-The AllenAI SPECTER2 base model and adapter are pinned to immutable Hugging
-Face commit SHAs. Remote model code is disabled, and automation never accepts
-an arbitrary model repository or checkpoint.
+The AllenAI SPECTER2 base model is pinned to an immutable Hugging Face commit
+SHA. Remote model code is disabled, and automation never accepts an arbitrary
+model repository or checkpoint. Embedding-model migrations use the manual
+full-dataset re-embedding workflow before incremental refreshes resume so the
+published dataset contains one coherent vector space.
