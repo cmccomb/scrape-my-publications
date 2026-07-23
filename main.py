@@ -34,8 +34,6 @@ SCHOLAR_REQUEST_DELAY_SECONDS = 2.0
 SCHOLAR_RETRY_ATTEMPTS = 3
 SPECTER_MODEL_NAME = "allenai/specter2_base"
 SPECTER_MODEL_REVISION = "3447645e1def9117997203454fa4495937bfbd83"
-SPECTER_ADAPTER_NAME = "allenai/specter2"
-SPECTER_ADAPTER_REVISION = "2081559630a80fc5851d8f798a05ba81e9468089"
 STATUS_SCHEMA_VERSION = 1
 SNAPSHOT_SCHEMA_VERSION = 1
 LOGGER = logging.getLogger(__name__)
@@ -83,33 +81,20 @@ def retry_operation(
 
 
 def load_specter2_model() -> tuple[Any, Any]:
-    """Load the SPECTER2 tokenizer and adapter-equipped model."""
+    """Load the pinned SPECTER2 base tokenizer and model."""
 
-    from adapters import AutoAdapterModel
-    from huggingface_hub import snapshot_download
-    from transformers import AutoTokenizer
+    from transformers import AutoModel, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
         SPECTER_MODEL_NAME,
         revision=SPECTER_MODEL_REVISION,
         trust_remote_code=False,
     )
-    model = AutoAdapterModel.from_pretrained(
+    model = AutoModel.from_pretrained(
         SPECTER_MODEL_NAME,
         revision=SPECTER_MODEL_REVISION,
         trust_remote_code=False,
     )
-    adapter_path = snapshot_download(
-        SPECTER_ADAPTER_NAME,
-        revision=SPECTER_ADAPTER_REVISION,
-    )
-    adapter_name = model.load_adapter(
-        adapter_path,
-        source="local",
-        load_as="specter2",
-        set_active=True,
-    )
-    model.set_active_adapters(adapter_name)
     model.eval()
     return tokenizer, model
 
