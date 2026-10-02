@@ -3,6 +3,6 @@ pandas==3.0.6
 scholarly==1.7.11
 bibtexparser==1.4.4  # scholarly 1.7.11 uses the v1 bibdatabase API
 setuptools==84.0.0
-torch==2.13.0
+torch==2.14.0
 tqdm==4.70.0
 transformers==5.17.0
