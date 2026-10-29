@@ -4,6 +4,7 @@ import datetime
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas
 import pytest
@@ -16,9 +17,60 @@ import main as publication_sync
 from main import (
     determine_publications_to_refresh,
     ensure_last_updated_column,
+    load_specter2_model,
     synchronize_listing_metadata,
     validate_publication_dataset,
 )
+
+
+def test_specter2_loader_uses_pinned_base_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The embedding loader must avoid adapters and remote model code."""
+
+    calls: list[tuple[str, str, dict[str, object]]] = []
+    tokenizer = object()
+    model = SimpleNamespace(eval=lambda: calls.append(("model", "eval", {})))
+
+    fake_transformers = SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(
+            from_pretrained=lambda name, **kwargs: (
+                calls.append(("tokenizer", name, kwargs)),
+                tokenizer,
+            )[1]
+        ),
+        AutoModel=SimpleNamespace(
+            from_pretrained=lambda name, **kwargs: (
+                calls.append(("model", name, kwargs)),
+                model,
+            )[1]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    loaded_tokenizer, loaded_model = load_specter2_model()
+
+    assert loaded_tokenizer is tokenizer
+    assert loaded_model is model
+    assert calls == [
+        (
+            "tokenizer",
+            publication_sync.SPECTER_MODEL_NAME,
+            {
+                "revision": publication_sync.SPECTER_MODEL_REVISION,
+                "trust_remote_code": False,
+            },
+        ),
+        (
+            "model",
+            publication_sync.SPECTER_MODEL_NAME,
+            {
+                "revision": publication_sync.SPECTER_MODEL_REVISION,
+                "trust_remote_code": False,
+            },
+        ),
+        ("model", "eval", {}),
+    ]
 
 
 def test_selects_new_publications_when_available() -> None:
